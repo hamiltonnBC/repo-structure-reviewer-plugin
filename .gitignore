@@ -2,8 +2,12 @@
 
 .idea/
 venv/
-.ds_store/
+.gradle/
+build/
 
+*.iml
+out/
+.DS_Store
 
 
 

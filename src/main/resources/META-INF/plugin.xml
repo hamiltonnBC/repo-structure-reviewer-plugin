@@ -1,0 +1,22 @@
+<idea-plugin>
+    <id>com.your.plugin.repo-structure</id>
+    <name>Repository Structure Documenter</name>
+    <vendor>Your Name</vendor>
+    <description>Automatically generates and updates repository structure documentation</description>
+    
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="com.your.plugin.RepoStructurePlugin"/>
+    </extensions>
+    
+    <actions>
+        <action id="UpdateStructureAction" 
+                class="com.your.plugin.UpdateStructureAction" 
+                text="Update Repository Structure" 
+                description="Update repository structure documentation">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

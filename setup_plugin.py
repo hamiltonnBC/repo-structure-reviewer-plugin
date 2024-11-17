@@ -24,13 +24,13 @@ class PluginSetup:
         for directory in directories:
             (self.plugin_path / directory).mkdir(parents=True, exist_ok=True)
 
-    def create_build_gradle(self):
-        """Creates the build.gradle.kts file."""
-        content = '''
+def create_build_gradle(self):
+    """Creates the build.gradle.kts file."""
+    content = '''
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.8.21"
-    id("org.jetbrains.intellij") version "1.13.3"
+    id("org.jetbrains.kotlin.jvm") version "1.9.22"
+    id("org.jetbrains.intellij") version "1.17.2"
 }
 
 group = "com.your.plugin"
@@ -40,28 +40,39 @@ repositories {
     mavenCentral()
 }
 
+kotlin {
+    jvmToolchain(17)
+}
+
 intellij {
-    version.set("2023.1.3")
-    type.set("IC") // IC for IntelliJ IDEA Community, IU for Ultimate
-    plugins.set(listOf("com.intellij.java"))
+    version.set("2023.3.3")
+    type.set("IC")
+    plugins.set(listOf(
+        "com.intellij.java",
+        "org.jetbrains.kotlin"
+    ))
+}
+
+dependencies {
+    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
 }
 
 tasks {
-    withType<JavaCompile> {
-        sourceCompatibility = "17"
-        targetCompatibility = "17"
-    }
-    
-    withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "17"
+    buildSearchableOptions {
+        enabled = false
     }
 
     patchPluginXml {
-        sinceBuild.set("231")
+        sinceBuild.set("233")
         untilBuild.set("241.*")
     }
+
+    runIde {
+        // Reduce memory usage for the test IDE
+        jvmArgs = listOf("-Xmx1024m", "-Xms256m")
+    }
 }
-        '''.strip()
+    '''.strip()
 
         with open(self.plugin_path / "build.gradle.kts", "w") as f:
             f.write(content)
@@ -294,18 +305,58 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.ui.components.JBList
+import com.intellij.ui.components.JBScrollPane
+import javax.swing.*
+import java.awt.Component
+import java.awt.BorderLayout
+import java.awt.Dimension
+
+class DirectorySelectionDialog(
+    parent: Component?,
+    private val directories: List<VirtualFile>
+) : DialogWrapper(parent, true) {
+    private val listModel = DefaultListModel<VirtualFile>()
+    private val list = JBList(listModel)
+
+    init {
+        title = "Select Directories for Documentation"
+        directories.forEach { listModel.addElement(it) }
+        list.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+        init()
+    }
+
+    override fun createCenterPanel(): JComponent {
+        val panel = JPanel(BorderLayout())
+        val scrollPane = JBScrollPane(list)
+        scrollPane.preferredSize = Dimension(300, 200)
+        
+        panel.add(JLabel("Select directories to document:"), BorderLayout.NORTH)
+        panel.add(scrollPane, BorderLayout.CENTER)
+        return panel
+    }
+
+    fun getSelectedDirectories(): List<VirtualFile> {
+        return list.selectedValuesList
+    }
+}
 
 class UpdateStructureAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        
         val documenter = RepoStructureDocumenter(project)
-        
+
         project.basePath?.let { basePath ->
             val projectDir = LocalFileSystem.getInstance().findFileByPath(basePath) ?: return
-            
-            listOf("frontend", "backend").forEach { dirName ->
-                projectDir.findChild(dirName)?.let { dir ->
+            val directories = findAllDirectories(projectDir)
+
+            val dialog = DirectorySelectionDialog(null, directories)
+            if (dialog.showAndGet()) {
+                val selectedDirs = dialog.getSelectedDirectories()
+                
+                selectedDirs.forEach { dir ->
                     val content = documenter.generateStructure(dir)
                     WriteCommandAction.runWriteCommandAction(project) {
                         val structureFile = dir.findChild("REPOSITORY_STRUCTURE.md") 
@@ -316,7 +367,18 @@ class UpdateStructureAction : AnAction() {
             }
         }
     }
-    
+
+    private fun findAllDirectories(root: VirtualFile): List<VirtualFile> {
+        val result = mutableListOf<VirtualFile>()
+        if (root.isDirectory) {
+            result.add(root)
+            root.children
+                .filter { it.isDirectory }
+                .forEach { result.addAll(findAllDirectories(it)) }
+        }
+        return result
+    }
+
     override fun update(e: AnActionEvent) {
         val project = e.project
         e.presentation.isEnabledAndVisible = project != null
