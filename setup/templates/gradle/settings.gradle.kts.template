@@ -1,0 +1,1 @@
+rootProject.name = "repo-structure-plugin"
