@@ -24,55 +24,55 @@ class PluginSetup:
         for directory in directories:
             (self.plugin_path / directory).mkdir(parents=True, exist_ok=True)
 
-def create_build_gradle(self):
-    """Creates the build.gradle.kts file."""
-    content = '''
-plugins {
-    id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.22"
-    id("org.jetbrains.intellij") version "1.17.2"
-}
-
-group = "com.your.plugin"
-version = "1.0-SNAPSHOT"
-
-repositories {
-    mavenCentral()
-}
-
-kotlin {
-    jvmToolchain(17)
-}
-
-intellij {
-    version.set("2023.3.3")
-    type.set("IC")
-    plugins.set(listOf(
-        "com.intellij.java",
-        "org.jetbrains.kotlin"
-    ))
-}
-
-dependencies {
-    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
-}
-
-tasks {
-    buildSearchableOptions {
-        enabled = false
+    def create_build_gradle(self):
+        """Creates the build.gradle.kts file."""
+        content = '''
+    plugins {
+        id("java")
+        id("org.jetbrains.kotlin.jvm") version "1.9.22"
+        id("org.jetbrains.intellij") version "1.17.2"
     }
-
-    patchPluginXml {
-        sinceBuild.set("233")
-        untilBuild.set("241.*")
+    
+    group = "com.your.plugin"
+    version = "1.0-SNAPSHOT"
+    
+    repositories {
+        mavenCentral()
     }
-
-    runIde {
-        // Reduce memory usage for the test IDE
-        jvmArgs = listOf("-Xmx1024m", "-Xms256m")
+    
+    kotlin {
+        jvmToolchain(17)
     }
-}
-    '''.strip()
+    
+    intellij {
+        version.set("2023.3.3")
+        type.set("IC")
+        plugins.set(listOf(
+            "com.intellij.java",
+            "org.jetbrains.kotlin"
+        ))
+    }
+    
+    dependencies {
+        implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
+    }
+    
+    tasks {
+        buildSearchableOptions {
+            enabled = false
+        }
+    
+        patchPluginXml {
+            sinceBuild.set("233")
+            untilBuild.set("241.*")
+        }
+    
+        runIde {
+            // Reduce memory usage for the test IDE
+            jvmArgs = listOf("-Xmx1024m", "-Xms256m")
+        }
+    }
+        '''.strip()
 
         with open(self.plugin_path / "build.gradle.kts", "w") as f:
             f.write(content)
@@ -302,69 +302,116 @@ package com.your.plugin
 
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
-import javax.swing.*
-import java.awt.Component
-import java.awt.BorderLayout
+import com.intellij.openapi.ui.Messages
 import java.awt.Dimension
+import javax.swing.*
+import java.awt.BorderLayout
 
 class DirectorySelectionDialog(
-    parent: Component?,
+    private val project: com.intellij.openapi.project.Project,
     private val directories: List<VirtualFile>
-) : DialogWrapper(parent, true) {
-    private val listModel = DefaultListModel<VirtualFile>()
-    private val list = JBList(listModel)
+) : DialogWrapper(project, true) {
+    private val listModel = DefaultListModel<String>()
+    private val list = JBList(listModel).apply {
+        selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+    }
+    private val dirMap = mutableMapOf<String, VirtualFile>()
 
     init {
         title = "Select Directories for Documentation"
-        directories.forEach { listModel.addElement(it) }
-        list.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+        directories.forEach { dir ->
+            val path = dir.path.removePrefix(project.basePath ?: "")
+            dirMap[path] = dir
+            listModel.addElement(path)
+        }
         init()
     }
 
     override fun createCenterPanel(): JComponent {
-        val panel = JPanel(BorderLayout())
-        val scrollPane = JBScrollPane(list)
-        scrollPane.preferredSize = Dimension(300, 200)
-        
-        panel.add(JLabel("Select directories to document:"), BorderLayout.NORTH)
-        panel.add(scrollPane, BorderLayout.CENTER)
-        return panel
+        return JPanel(BorderLayout()).apply {
+            preferredSize = Dimension(400, 300)
+            
+            add(JLabel("Select directories to document (multiple selection allowed):"), BorderLayout.NORTH)
+            add(JBScrollPane(list), BorderLayout.CENTER)
+        }
     }
 
     fun getSelectedDirectories(): List<VirtualFile> {
-        return list.selectedValuesList
+        return list.selectedValuesList.mapNotNull { dirMap[it] }
     }
 }
 
 class UpdateStructureAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val documenter = RepoStructureDocumenter(project)
+        if (project.isDisposed) return
 
-        project.basePath?.let { basePath ->
-            val projectDir = LocalFileSystem.getInstance().findFileByPath(basePath) ?: return
-            val directories = findAllDirectories(projectDir)
+        try {
+            project.basePath?.let { basePath ->
+                val projectDir = LocalFileSystem.getInstance().findFileByPath(basePath) ?: return
+                val directories = findAllDirectories(projectDir)
 
-            val dialog = DirectorySelectionDialog(null, directories)
-            if (dialog.showAndGet()) {
-                val selectedDirs = dialog.getSelectedDirectories()
-                
-                selectedDirs.forEach { dir ->
-                    val content = documenter.generateStructure(dir)
-                    WriteCommandAction.runWriteCommandAction(project) {
-                        val structureFile = dir.findChild("REPOSITORY_STRUCTURE.md") 
-                            ?: dir.createChildData(this, "REPOSITORY_STRUCTURE.md")
-                        structureFile.setBinaryContent(content.toByteArray())
+                if (directories.isEmpty()) {
+                    Messages.showInfoMessage(
+                        project,
+                        "No directories found in the project.",
+                        "Repository Structure"
+                    )
+                    return
+                }
+
+                val dialog = DirectorySelectionDialog(project, directories)
+                if (dialog.showAndGet()) {
+                    val selectedDirs = dialog.getSelectedDirectories()
+                    if (selectedDirs.isEmpty()) {
+                        Messages.showInfoMessage(
+                            project,
+                            "No directories were selected.",
+                            "Repository Structure"
+                        )
+                        return
                     }
+
+                    val documenter = RepoStructureDocumenter(project)
+                    var updatedCount = 0
+
+                    selectedDirs.forEach { dir ->
+                        try {
+                            val content = documenter.generateStructure(dir)
+                            WriteCommandAction.runWriteCommandAction(project) {
+                                val structureFile = dir.findChild("REPOSITORY_STRUCTURE.md")
+                                    ?: dir.createChildData(this, "REPOSITORY_STRUCTURE.md")
+                                structureFile.setBinaryContent(content.toByteArray())
+                                updatedCount++
+                            }
+                        } catch (ex: Exception) {
+                            Messages.showErrorDialog(
+                                project,
+                                "Error updating ${dir.name}: ${ex.message}",
+                                "Error"
+                            )
+                        }
+                    }
+
+                    Messages.showInfoMessage(
+                        project,
+                        "Successfully updated $updatedCount directory structure(s).",
+                        "Repository Structure"
+                    )
                 }
             }
+        } catch (e: Exception) {
+            Messages.showErrorDialog(
+                project,
+                "An error occurred: ${e.message}",
+                "Error"
+            )
         }
     }
 
